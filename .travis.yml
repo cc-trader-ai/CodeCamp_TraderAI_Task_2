@@ -1,0 +1,17 @@
+language: python
+
+cache: pip
+
+python:
+  - 3.6
+
+install:
+  - pip install -r requirements.txt
+
+script:
+  pytest -s
+
+branches:
+  only:
+    - master # Only build the `master` branch. Additionally we configured Travis CI to also build branch updates and
+             # pull request updates
