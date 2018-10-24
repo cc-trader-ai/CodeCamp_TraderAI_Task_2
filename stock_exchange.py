@@ -25,19 +25,19 @@ if __name__ == "__main__":
         # Code-Camp Task 0 traders
         ('Team Blue Simple Trader (perfect prediction)', Traders.TeamBlueSimpleTrader_with_perfect_prediction()),
         ('Team Green Simple Trader (perfect prediction)', Traders.TeamGreenSimpleTrader_with_perfect_prediction()),
-        ('Team Pink Simple Trader (perfect prediction)', Traders.TeamPinkSimpleTrader_with_perfect_prediction()),
+        ('Team Black Simple Trader (perfect prediction)', Traders.TeamBlackSimpleTrader_with_perfect_prediction()),
         ('Team Red Simple Trader (perfect prediction)', Traders.TeamRedSimpleTrader_with_perfect_prediction()),
           
         # Code-Camp Task 1 traders
         ('Simple Trader (Team Blue prediction)', Traders.SimpleTrader_with_team_blue_prediction()),
         ('Simple Trader (Team Green prediction)', Traders.SimpleTrader_with_team_green_prediction()),
-        ('Simple Trader (Team Pink prediction)', Traders.SimpleTrader_with_team_pink_prediction()),
+        ('Simple Trader (Team Black prediction)', Traders.SimpleTrader_with_team_black_prediction()),
         ('Simple Trader (Team Red prediction)', Traders.SimpleTrader_with_team_red_prediction()),
                 
         # Code-Camp Task 2 traders    
         ('Team Blue DQL Trader (perfect prediction)', Traders.TeamBlueDqlTrader_with_perfect_prediction()),
         ('Team Green DQL Trader (perfect prediction)', Traders.TeamGreenDqlTrader_with_perfect_prediction()),
-        ('Team Pink DQL Trader (perfect prediction)', Traders.TeamPinkDqlTrader_with_perfect_prediction()),
+        ('Team Black DQL Trader (perfect prediction)', Traders.TeamBlackDqlTrader_with_perfect_prediction()),
         ('Team Red DQL Trader (perfect prediction)', Traders.TeamRedDqlTrader_with_perfect_prediction())                
                                     
     ]
