@@ -64,7 +64,7 @@ class TeamGreenDqlTrader(ITrader):
         # Parameters for neural network
         self.state_size = 2
         self.action_size = 5
-        self.hidden_size = 50
+        self.hidden_size = 30
 
         # Parameters for deep Q-learning
         self.learning_rate = 0.001
@@ -86,7 +86,9 @@ class TeamGreenDqlTrader(ITrader):
         if self.model is None:  # loading failed or we didn't want to use a trained model
             self.model = Sequential()
             self.model.add(Dense(self.hidden_size * 2, input_dim=self.state_size, activation='relu'))
-            self.model.add(Dense(self.hidden_size * 2, activation='relu'))
+            self.model.add(Dense(self.hidden_size, activation='relu'))
+            self.model.add(Dense(self.hidden_size, activation='relu'))
+            self.model.add(Dense(self.hidden_size, activation='relu'))
             self.model.add(Dense(self.action_size, activation='linear'))
             logger.info(f"DQL Trader: Created new untrained model")
         assert self.model is not None
@@ -122,22 +124,15 @@ class TeamGreenDqlTrader(ITrader):
         # TODO: Save created state, actions and portfolio value for the next call of doTrade
 
         deltaA = self.stock_a_predictor.doPredict(
-            stock_market_data[CompanyEnum.COMPANY_A]) - stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_A)
+            stock_market_data[CompanyEnum.COMPANY_A]) / stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_A)
         deltaB = self.stock_b_predictor.doPredict(
-            stock_market_data[CompanyEnum.COMPANY_B]) - stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_B)
+            stock_market_data[CompanyEnum.COMPANY_B]) / stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_B)
 
         INPUT = numpy.asarray([[
-            1.0 if deltaA > 0.0 else 0.0,
-            1.0 if deltaB > 0.0 else 0.0,
+            (deltaA - 1.0) / 0.04,
+            (deltaB - 1.0) / 0.04,
         ]])
         qualities = self.model.predict(INPUT)[0]
-
-        if PRINT_QTABLE:
-            results = [2, 2, 1, 2, 2, 1, 0, 0, 0]
-            qtable = [[-1.0, -1.0], [-1.0, 0.0], [-1.0, 1.0], [0.0, -1.0], [0.0, 0.0], [0.0, 1.0], [1.0, -1.0],
-                      [1.0, 0.0], [1.0, 1.0]]
-            for qt in qtable:
-                print("for i: %s the predictions are: %s" % (qt, self.model.predict(numpy.asarray([qt]))[0]))
 
         qmax = max(qualities[0], qualities[1], qualities[2])
 
@@ -216,7 +211,7 @@ class TeamGreenDqlTrader(ITrader):
 
 
 # This method retrains the trader from scratch using training data from PERIOD_1 and test data from PERIOD_2
-EPISODES = 10
+EPISODES = 6
 if __name__ == "__main__":
     # Read the training data
     training_data = read_stock_market_data([CompanyEnum.COMPANY_A, CompanyEnum.COMPANY_B], [PERIOD_1])
