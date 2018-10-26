@@ -61,7 +61,7 @@ class TeamRedDqlTrader(ITrader):
         # Parameters for neural network
         self.state_size = 2
         self.action_size = 4
-        self.hidden_size = 50
+        self.hidden_size = 10
 
         # Parameters for deep Q-learning
         self.gamma = 1
@@ -85,6 +85,9 @@ class TeamRedDqlTrader(ITrader):
         if self.model is None:  # loading failed or we didn't want to use a trained model
             self.model = Sequential()
             self.model.add(Dense(self.hidden_size * 2, input_dim=self.state_size, activation='tanh'))
+            self.model.add(Dense(self.hidden_size, activation='tanh'))
+            self.model.add(Dense(self.hidden_size, activation='tanh'))
+            self.model.add(Dense(self.hidden_size, activation='tanh'))
             self.model.add(Dense(self.hidden_size, activation='tanh'))
             self.model.add(Dense(self.action_size, activation='linear'))
             logger.info(f"DQL Trader: Created new untrained model")
