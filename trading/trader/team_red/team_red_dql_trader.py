@@ -119,7 +119,7 @@ class TeamRedDqlTrader(ITrader):
             current_price_a, predicted_price_a, 
             current_price_b, predicted_price_b)
 
-        if self.last_state:
+        if self.last_state and self.train_while_trading:
             self.train_model(state, self.last_state)
 
         action = self.decide_action(state, self.last_state)
@@ -250,7 +250,7 @@ def log_orders(orders):
         logger.info("Order: {0} {1} from {2}".format(order.action, order.shares.amount, order.shares.company_enum))
 
 # This method retrains the trader from scratch using training data from PERIOD_1 and test data from PERIOD_2
-EPISODES = 10
+EPISODES = 15
 if __name__ == "__main__":
     # Read the training data
     training_data = read_stock_market_data([CompanyEnum.COMPANY_A, CompanyEnum.COMPANY_B], [PERIOD_1])
