@@ -4,12 +4,17 @@ Created on 19.11.2017
 @author: rmueller
 """
 from collections import deque
+from enum import Enum
 import datetime as dt
+import random
+
+import numpy as np
 
 from definitions import PERIOD_1, PERIOD_2
 from evaluating.portfolio_evaluator import PortfolioEvaluator
 from model.Portfolio import Portfolio
 from model.StockMarketData import StockMarketData
+from model.Order import SharesOfCompany
 from model.IPredictor import IPredictor
 from model.ITrader import ITrader
 from model.Order import OrderList
@@ -19,7 +24,9 @@ from keras.optimizers import Adam
 from model.Order import CompanyEnum
 from utils import save_keras_sequential, load_keras_sequential, read_stock_market_data
 from logger import logger
+from predicting.predictor.reference.perfect_predictor import PerfectPredictor
 from predicting.predictor.reference.nn_binary_predictor import StockANnBinaryPredictor, StockBNnBinaryPredictor
+from predicting.predictor.reference.nn_perfect_binary_predictor import StockANnPerfectBinaryPredictor, StockBNnPerfectBinaryPredictor
 
 TEAM_NAME = "team_red"
 
@@ -53,15 +60,17 @@ class TeamRedDqlTrader(ITrader):
 
         # Parameters for neural network
         self.state_size = 2
-        self.action_size = 10
+        self.action_size = 4
         self.hidden_size = 50
 
         # Parameters for deep Q-learning
+        self.gamma = 1
         self.learning_rate = 0.001
         self.epsilon = 1.0
         self.epsilon_decay = 0.999
         self.epsilon_min = 0.01
         self.batch_size = 64
+        self.train_epochs = 10
         self.min_size_of_memory_before_training = 1000  # should be way bigger than batch_size, but smaller than memory
         self.memory = deque(maxlen=2000)
 
@@ -75,8 +84,8 @@ class TeamRedDqlTrader(ITrader):
             self.model = load_keras_sequential(self.RELATIVE_DATA_DIRECTORY, self.network_filename)
         if self.model is None:  # loading failed or we didn't want to use a trained model
             self.model = Sequential()
-            self.model.add(Dense(self.hidden_size * 2, input_dim=self.state_size, activation='relu'))
-            self.model.add(Dense(self.hidden_size, activation='relu'))
+            self.model.add(Dense(self.hidden_size * 2, input_dim=self.state_size, activation='tanh'))
+            self.model.add(Dense(self.hidden_size, activation='tanh'))
             self.model.add(Dense(self.action_size, activation='linear'))
             logger.info(f"DQL Trader: Created new untrained model")
         assert self.model is not None
@@ -95,15 +104,108 @@ class TeamRedDqlTrader(ITrader):
         Returns:
           A OrderList instance, may be empty never None
         """
-        # TODO: Build and store current state object
+        
+        current_price_a = stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_A)
+        current_price_b = stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_B)
+        
+        predicted_price_a = self.stock_a_predictor.doPredict(stock_market_data[CompanyEnum.COMPANY_A])
+        predicted_price_b = self.stock_b_predictor.doPredict(stock_market_data[CompanyEnum.COMPANY_B])
+        
+        portfolio_value = portfolio.total_value(
+            stock_market_data.get_most_recent_trade_day(), 
+            stock_market_data)
 
-        # TODO: Store experience and train the neural network only if doTrade was called before at least once
+        state = State(portfolio_value,
+            current_price_a, predicted_price_a, 
+            current_price_b, predicted_price_b)
 
-        # TODO: Create actions for current state and decrease epsilon for fewer random actions
+        if self.last_state:
+            self.train_model(state, self.last_state)
 
-        # TODO: Save created state, actions and portfolio value for the next call of doTrade
+        action = self.decide_action(state, self.last_state)
+        orders = self.create_orders(action, portfolio, stock_market_data)
 
-        return OrderList()
+        self.last_state = state
+
+        # log_orders(orders)
+
+        return orders
+
+    def train_model(self, state, last_state):
+        prediction_for_current_state = self.predict_actions(state)
+        reward = self.calculate_reward(state, last_state)
+
+        model_input = np.array([[
+            last_state.get_delta_price_a(), 
+            last_state.get_delta_price_b()
+        ]])
+
+        expected_predictions = [
+            last_state.predicted_actions[TradingAction.SELL_A_AND_B.value],
+            last_state.predicted_actions[TradingAction.BUY_A_AND_SELL_B.value],
+            last_state.predicted_actions[TradingAction.BUY_B_AND_SELL_A.value],
+            last_state.predicted_actions[TradingAction.BUY_A_AND_B.value]
+        ]
+
+        last_action_index = last_state.best_action.value
+        expected_predictions[last_action_index] = reward + self.gamma * prediction_for_current_state[last_action_index]
+        expected_output = np.array([expected_predictions])
+
+        self.model.fit(model_input, expected_output, epochs=self.train_epochs, batch_size=self.batch_size)
+
+    def calculate_reward(self, state, last_state):
+        portfolio_value_delta = calculate_delta(state.portfolio_value, last_state.portfolio_value)
+        return portfolio_value_delta - 0.5
+
+    def decide_action(self, state, last_state):
+        best_action = None
+        predicted_actions = self.predict_actions(state)
+        if random.uniform(0, 1) < self.epsilon:
+            best_action = TradingAction(random.randint(0, len(TradingAction) - 1))
+        else:
+            best_action_index = predicted_actions.index(max(predicted_actions))
+            best_action = TradingAction(best_action_index)
+        self.reduce_epsilon()
+        state.best_action = best_action
+        state.predicted_actions = predicted_actions
+        return best_action
+
+    def create_orders(self, action, portfolio, stock_market_data):
+        orders = OrderList()
+        if action == TradingAction.SELL_A_AND_B:
+            self.sell_shares(CompanyEnum.COMPANY_A, orders, portfolio)
+            self.sell_shares(CompanyEnum.COMPANY_B, orders, portfolio)
+        elif action == TradingAction.BUY_A_AND_SELL_B:
+            self.buy_shares(CompanyEnum.COMPANY_A, orders, portfolio.cash, stock_market_data)
+            self.sell_shares(CompanyEnum.COMPANY_B, orders, portfolio)
+        elif action == TradingAction.BUY_B_AND_SELL_A:
+            self.buy_shares(CompanyEnum.COMPANY_B, orders, portfolio.cash, stock_market_data)
+            self.sell_shares(CompanyEnum.COMPANY_A, orders, portfolio)
+        elif action == TradingAction.BUY_A_AND_B:
+            self.buy_shares(CompanyEnum.COMPANY_A, orders, portfolio.cash / 2, stock_market_data)
+            self.buy_shares(CompanyEnum.COMPANY_B, orders, portfolio.cash / 2, stock_market_data)
+        return orders
+
+    def sell_shares(self, company, orders, portfolio):
+        shares = find_shares_of_company(company, portfolio.shares)
+        if shares and shares.amount > 0:
+            orders.sell(company, shares.amount)
+
+    def buy_shares(self, company, orders, cash, stock_market_data):
+        price = stock_market_data[company].get_last()[-1]
+        amount_to_buy = int(cash // price)
+        if amount_to_buy > 0:
+            orders.buy(company, amount_to_buy)
+
+    def predict_actions(self, state):
+        model_input = np.array([[
+            state.get_delta_price_a(), state.get_delta_price_b()
+        ]])
+        return self.model.predict(model_input)[0].tolist()
+
+    def reduce_epsilon(self):
+        if self.epsilon > self.epsilon_min:
+            self.epsilon = min(self.epsilon_min * self.epsilon_decay, self.epsilon_min)
 
     def save_trained_model(self):
         """
@@ -111,9 +213,44 @@ class TeamRedDqlTrader(ITrader):
         """
         save_keras_sequential(self.model, self.RELATIVE_DATA_DIRECTORY, self.network_filename)
 
+class State():
+    def __init__(self, portfolio_value, current_price_a, predicted_price_a, current_price_b, predicted_price_b):
+        self.portfolio_value = portfolio_value
+        self.current_price_a = current_price_a
+        self.current_price_b = current_price_b
+        self.predicted_price_a = predicted_price_a
+        self.predicted_price_b = predicted_price_b
+        self.predicted_actions = None
+        self.best_action = None
+
+    def get_delta_price_a(self):
+        return calculate_delta(self.predicted_price_a, self.current_price_a)
+
+    def get_delta_price_b(self):
+        return calculate_delta(self.predicted_price_b, self.current_price_b)
+
+class TradingAction(Enum):
+    SELL_A_AND_B = 0
+    BUY_A_AND_SELL_B = 1
+    BUY_B_AND_SELL_A = 2
+    BUY_A_AND_B = 3
+
+def calculate_delta(a, b):
+    return (a / b) - 1
+
+def find_shares_of_company(company_enum: CompanyEnum, shares: list) -> SharesOfCompany:
+    for shares_of_company in shares:
+        if isinstance(shares_of_company, SharesOfCompany) and shares_of_company.company_enum == company_enum:
+            return shares_of_company
+
+    return None
+
+def log_orders(orders):
+    for order in orders:
+        logger.info("Order: {0} {1} from {2}".format(order.action, order.shares.amount, order.shares.company_enum))
 
 # This method retrains the trader from scratch using training data from PERIOD_1 and test data from PERIOD_2
-EPISODES = 50
+EPISODES = 10
 if __name__ == "__main__":
     # Read the training data
     training_data = read_stock_market_data([CompanyEnum.COMPANY_A, CompanyEnum.COMPANY_B], [PERIOD_1])
@@ -126,9 +263,9 @@ if __name__ == "__main__":
     portfolio = Portfolio(10000.0, [], name)
 
     # Initialize trader: use perfect predictors, don't use an already trained model, but learn while trading
-    # trader = DqlTrader(PerfectPredictor(CompanyEnum.COMPANY_A), PerfectPredictor(CompanyEnum.COMPANY_B), False, True, MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR)
-    # trader = DqlTrader(StockANnPerfectBinaryPredictor(), StockBNnPerfectBinaryPredictor(), False, True, MODEL_FILENAME_DQLTRADER_PERFECT_NN_BINARY_PREDICTOR)
-    trader = TeamRedDqlTrader(StockANnBinaryPredictor(), StockBNnBinaryPredictor(), False, True, MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR)
+    trader = TeamRedDqlTrader(PerfectPredictor(CompanyEnum.COMPANY_A), PerfectPredictor(CompanyEnum.COMPANY_B), False, True, MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR)
+    # trader = TeamRedDqlTrader(StockANnPerfectBinaryPredictor(), StockBNnPerfectBinaryPredictor(), False, True, MODEL_FILENAME_DQLTRADER_PERFECT_NN_BINARY_PREDICTOR)
+    # trader = TeamRedDqlTrader(StockANnBinaryPredictor(), StockBNnBinaryPredictor(), False, True, MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR)
 
     # Start evaluation and train correspondingly; don't display the results in a plot but display final portfolio value
     evaluator = PortfolioEvaluator([trader], False)
@@ -143,9 +280,9 @@ if __name__ == "__main__":
         trader.save_trained_model()
 
         # Evaluation over training and visualization
-        # trader_test = TeamRedDqlTrader(PerfectPredictor(CompanyEnum.COMPANY_A), PerfectPredictor(CompanyEnum.COMPANY_B), True, False, MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR)
+        trader_test = TeamRedDqlTrader(PerfectPredictor(CompanyEnum.COMPANY_A), PerfectPredictor(CompanyEnum.COMPANY_B), True, False, MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR)
         # trader_test = TeamRedDqlTrader(StockANnPerfectBinaryPredictor(), StockBNnPerfectBinaryPredictor(), True, False, MODEL_FILENAME_DQLTRADER_PERFECT_NN_BINARY_PREDICTOR)
-        trader_test = TeamRedDqlTrader(StockANnBinaryPredictor(), StockBNnBinaryPredictor(), True, False, MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR)
+        # trader_test = TeamRedDqlTrader(StockANnBinaryPredictor(), StockBNnBinaryPredictor(), True, False, MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR)
         evaluator_test = PortfolioEvaluator([trader_test], False)
         all_portfolios_over_time = evaluator_test.inspect_over_time(test_data, [portfolio], date_offset=start_test_day)
         portfolio_over_time = all_portfolios_over_time[name]
