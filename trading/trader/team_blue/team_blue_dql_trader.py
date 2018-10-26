@@ -80,7 +80,7 @@ class TeamBlueDqlTrader(ITrader):
             self.model = Sequential()
             self.model.add(Dense(self.hidden_size * 2, input_dim=self.state_size, activation='relu'))
             self.model.add(Dense(self.hidden_size, activation='relu'))
-            self.model.add(Dense(self.action_size, activation='sigmoid'))
+            self.model.add(Dense(self.action_size, activation='tanh'))
             logger.info(f"DQL Trader: Created new untrained model")
         assert self.model is not None
         self.model.compile(loss='mse', optimizer=Adam(lr=self.learning_rate))
@@ -113,19 +113,19 @@ class TeamBlueDqlTrader(ITrader):
         s_a_current = stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_A)
         s_b_current = stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_B)
 
-        pct_a = (s_a_current * portfolio.get_amount(CompanyEnum.COMPANY_A))/portfolio.total_value(stock_market_data.get_most_recent_trade_day(), stock_market_data)
-        pct_b = (s_b_current * portfolio.get_amount(CompanyEnum.COMPANY_B))/portfolio.total_value(stock_market_data.get_most_recent_trade_day(), stock_market_data)
+        pct_a = round((s_a_current * portfolio.get_amount(CompanyEnum.COMPANY_A))/portfolio.total_value(stock_market_data.get_most_recent_trade_day(), stock_market_data), 2)
+        pct_b = round((s_b_current * portfolio.get_amount(CompanyEnum.COMPANY_B))/portfolio.total_value(stock_market_data.get_most_recent_trade_day(), stock_market_data), 2)
         pct_cash = 1 - pct_a - pct_b;
 
 
         s_a_next = self.stock_a_predictor.doPredict(stock_market_data[CompanyEnum.COMPANY_A]);
         s_b_next = self.stock_b_predictor.doPredict(stock_market_data[CompanyEnum.COMPANY_B]);
 
-        pct_a_diff = (s_a_next - s_a_current) / s_a_current;
-        pct_b_diff = (s_b_next - s_b_current) / s_b_current;
+        pct_a_diff = round((s_a_next - s_a_current) / s_a_current, 2);
+        pct_b_diff = round((s_b_next - s_b_current) / s_b_current, 2);
 
         portfolio_value = portfolio.total_value(stock_market_data.get_most_recent_trade_day(), stock_market_data);
-        portfolio_diff = (self.portfolio_value_prev - portfolio_value) / self.portfolio_value_prev;
+        portfolio_diff = round((self.portfolio_value_prev - portfolio_value) / self.portfolio_value_prev, 2);
 
 
 
@@ -139,7 +139,7 @@ class TeamBlueDqlTrader(ITrader):
         if (portfolio_diff < 0):
             self.y_prev[0][self.idx_prev] = 1;
         elif (portfolio_diff >= 0):
-            self.y_prev[0][self.idx_prev] = 0;
+            self.y_prev[0][self.idx_prev] = -1;
 
 
 
@@ -161,7 +161,7 @@ class TeamBlueDqlTrader(ITrader):
         elif (idx == 1):
             ret.buy(CompanyEnum.COMPANY_B, math.floor(portfolio.cash / stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_B)))
         elif (idx == 2):
-            ret.sell(CompanyEnum.COMPANY_A, portfolio.get_amount(CompanyEnum.COMPANY_A))
+            ret.sell(CompanyEnum.COMPANY_A, portfolio.get_amount(CompanyEnum.COMPANY_A))     
         else:
             ret.sell(CompanyEnum.COMPANY_B, portfolio.get_amount(CompanyEnum.COMPANY_B))
 
