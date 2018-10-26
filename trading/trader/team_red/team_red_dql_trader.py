@@ -174,25 +174,25 @@ class TeamRedDqlTrader(ITrader):
             self.sell_shares(CompanyEnum.COMPANY_A, orders, portfolio, stock_market_data)
             self.sell_shares(CompanyEnum.COMPANY_B, orders, portfolio, stock_market_data)
         elif action == TradingAction.BUY_A_AND_SELL_B:
-            self.sell_shares(CompanyEnum.COMPANY_B, orders, portfolio, stock_market_data)
-            self.buy_shares(CompanyEnum.COMPANY_A, orders, portfolio.cash, stock_market_data)
+            updated_cash = self.sell_shares(CompanyEnum.COMPANY_B, orders, portfolio, stock_market_data)
+            self.buy_shares(CompanyEnum.COMPANY_A, orders, updated_cash, stock_market_data)
         elif action == TradingAction.BUY_B_AND_SELL_A:
-            self.sell_shares(CompanyEnum.COMPANY_A, orders, portfolio, stock_market_data)
-            self.buy_shares(CompanyEnum.COMPANY_B, orders, portfolio.cash, stock_market_data)
+            updated_cash = self.sell_shares(CompanyEnum.COMPANY_A, orders, portfolio, stock_market_data)
+            self.buy_shares(CompanyEnum.COMPANY_B, orders, updated_cash, stock_market_data)
         elif action == TradingAction.BUY_A_AND_B:
             self.buy_shares(CompanyEnum.COMPANY_A, orders, portfolio.cash / 2, stock_market_data)
             self.buy_shares(CompanyEnum.COMPANY_B, orders, portfolio.cash / 2, stock_market_data)
-        for order in orders:
-            logger.info("Trading: {0} {1} from {2}".format(order.action, order.shares.amount, order.shares.company_enum))
         return orders
 
     def sell_shares(self, company, orders, portfolio, stock_market_data):
+        updated_cash = portfolio.cash
         company_data = stock_market_data[company]
         price = company_data.get_last()[-1]
         shares = find_shares_of_company(company, portfolio.shares)
-        if shares:
+        if shares and shares.amount > 0:
             orders.sell(company, shares.amount)
-            portfolio.cash += shares.amount * price
+            updated_cash = portfolio.cash + (shares.amount * price)
+        return updated_cash
 
     def buy_shares(self, company, orders, cash, stock_market_data):
         company_data = stock_market_data[company]
