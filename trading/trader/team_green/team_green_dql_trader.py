@@ -3,8 +3,12 @@ Created on 19.11.2017
 
 @author: rmueller
 """
+import math
 from collections import deque
 import datetime as dt
+import random
+
+import numpy
 
 from definitions import PERIOD_1, PERIOD_2
 from evaluating.portfolio_evaluator import PortfolioEvaluator
@@ -17,6 +21,7 @@ from keras.models import Sequential
 from keras.layers import Dense
 from keras.optimizers import Adam
 from model.Order import CompanyEnum
+from predicting.predictor.reference.perfect_predictor import PerfectPredictor
 from utils import save_keras_sequential, load_keras_sequential, read_stock_market_data
 from logger import logger
 from predicting.predictor.reference.nn_binary_predictor import StockANnBinaryPredictor, StockBNnBinaryPredictor
@@ -27,6 +32,9 @@ MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR = TEAM_NAME + '_dql_trader_perfect'
 MODEL_FILENAME_DQLTRADER_PERFECT_NN_BINARY_PREDICTOR = TEAM_NAME + '_dql_trader_perfect_nn_binary'
 MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR = TEAM_NAME + '_dql_trader_nn_binary'
 
+GAMMA = 0.01
+MEMOMRY_SIZE = 100
+PRINT_QTABLE = False
 
 class TeamGreenDqlTrader(ITrader):
     """
@@ -35,8 +43,9 @@ class TeamGreenDqlTrader(ITrader):
     RELATIVE_DATA_DIRECTORY = 'trading/trader/' + TEAM_NAME + '/' + TEAM_NAME + '_dql_trader_data'
 
     def __init__(self, stock_a_predictor: IPredictor, stock_b_predictor: IPredictor,
-                 load_trained_model: bool=True,
-                 train_while_trading: bool=False, network_filename: str=MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR):
+                 load_trained_model: bool = True,
+                 train_while_trading: bool = False,
+                 network_filename: str = MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR):
         """
         Constructor
         Args:
@@ -54,15 +63,15 @@ class TeamGreenDqlTrader(ITrader):
 
         # Parameters for neural network
         self.state_size = 2
-        self.action_size = 10
-        self.hidden_size = 50
+        self.action_size = 5
+        self.hidden_size = 30
 
         # Parameters for deep Q-learning
         self.learning_rate = 0.001
         self.epsilon = 1.0
         self.epsilon_decay = 0.999
         self.epsilon_min = 0.01
-        self.batch_size = 64
+        self.batch_size = MEMOMRY_SIZE + 1
         self.min_size_of_memory_before_training = 1000  # should be way bigger than batch_size, but smaller than memory
         self.memory = deque(maxlen=2000)
 
@@ -78,10 +87,21 @@ class TeamGreenDqlTrader(ITrader):
             self.model = Sequential()
             self.model.add(Dense(self.hidden_size * 2, input_dim=self.state_size, activation='relu'))
             self.model.add(Dense(self.hidden_size, activation='relu'))
+            self.model.add(Dense(self.hidden_size, activation='relu'))
+            self.model.add(Dense(self.hidden_size, activation='relu'))
             self.model.add(Dense(self.action_size, activation='linear'))
             logger.info(f"DQL Trader: Created new untrained model")
         assert self.model is not None
         self.model.compile(loss='mse', optimizer=Adam(lr=self.learning_rate))
+
+        self.lastValue = None
+        self.lastQmax = None
+        self.lastAmax = None
+
+        self.lastInput = None
+        self.lastOutput = None
+
+        self.memory = []
 
     def doTrade(self, portfolio: Portfolio, current_portfolio_value: float,
                 stock_market_data: StockMarketData) -> OrderList:
@@ -96,7 +116,6 @@ class TeamGreenDqlTrader(ITrader):
         Returns:
           A OrderList instance, may be empty never None
         """
-        # TODO: Build and store current state object
 
         # TODO: Store experience and train the neural network only if doTrade was called before at least once
 
@@ -104,17 +123,95 @@ class TeamGreenDqlTrader(ITrader):
 
         # TODO: Save created state, actions and portfolio value for the next call of doTrade
 
-        return OrderList()
+        deltaA = self.stock_a_predictor.doPredict(
+            stock_market_data[CompanyEnum.COMPANY_A]) / stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_A)
+        deltaB = self.stock_b_predictor.doPredict(
+            stock_market_data[CompanyEnum.COMPANY_B]) / stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_B)
+
+        INPUT = numpy.asarray([[
+            (deltaA - 1.0) / 0.04,
+            (deltaB - 1.0) / 0.04,
+        ]])
+        qualities = self.model.predict(INPUT)[0]
+
+        qmax = max(qualities[0], qualities[1], qualities[2])
+
+        currentValue = portfolio.total_value(stock_market_data.get_most_recent_trade_day(), stock_market_data)
+
+        if self.lastValue and self.train_while_trading:
+            lastReward = min(1, max(-1, (currentValue / self.lastValue - 1) / 0.04))
+            shouldBeQ = lastReward + GAMMA * qmax
+
+            self.lastOutput[self.lastAmax] = shouldBeQ
+
+            xtrain = [self.lastInput[0]]
+            ytrain = [self.lastOutput]
+            for m in self.memory:
+                xtrain.append(m[0][0])
+                qs = self.model.predict(m[0])[0]
+                qs[m[1]] = m[2] + GAMMA * qs[m[1]]
+                ytrain.append(qs)
+
+            self.model.fit(numpy.asarray(xtrain), numpy.asarray(ytrain))
+
+            self.memory.append([self.lastInput, self.lastAmax, lastReward])
+            if len(self.memory) > MEMOMRY_SIZE:
+                self.memory.pop(0)
+
+        self.lastValue = currentValue
+        self.lastInput = INPUT
+        self.lastOutput = qualities
+
+        result = OrderList()
+
+        actions = ["BUY_A__SELL_B", "BUY_A", "BUY_B__SELL_A", "BUY_B", "SELL_ALL"]
+
+        nextAction = None
+        if random.random() < self.epsilon and self.train_while_trading:
+            nextAction = actions[random.randint(0, self.action_size - 1)]
+        else:
+            i = 0 if qualities[0] > qualities[1] else 1
+            i = 2 if qualities[2] > qualities[i] else i
+            i = 3 if qualities[3] > qualities[i] else i
+            i = 4 if qualities[4] > qualities[i] else i
+            nextAction = actions[i]
+
+        self.epsilon = max(self.epsilon_decay * self.epsilon, self.epsilon_min)
+
+        if nextAction == "BUY_A__SELL_B":
+            result.sell(CompanyEnum.COMPANY_B, portfolio.get_amount(CompanyEnum.COMPANY_B))
+            count = math.floor(portfolio.cash / stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_A))
+            result.buy(CompanyEnum.COMPANY_A, count)
+            self.lastAmax = 0
+        elif nextAction == "BUY_A":
+            count = math.floor(portfolio.cash / stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_A))
+            result.buy(CompanyEnum.COMPANY_A, count)
+            self.lastAmax = 1
+        elif nextAction == "BUY_B__SELL_A":
+            result.sell(CompanyEnum.COMPANY_A, portfolio.get_amount(CompanyEnum.COMPANY_A))
+            count = math.floor(portfolio.cash / stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_B))
+            result.buy(CompanyEnum.COMPANY_B, count)
+            self.lastAmax = 2
+        elif nextAction == "BUY_B":
+            count = math.floor(portfolio.cash / stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_B))
+            result.buy(CompanyEnum.COMPANY_B, count)
+            self.lastAmax = 3
+        elif nextAction == "SELL_ALL":
+            result.sell(CompanyEnum.COMPANY_A, portfolio.get_amount(CompanyEnum.COMPANY_A))
+            result.sell(CompanyEnum.COMPANY_B, portfolio.get_amount(CompanyEnum.COMPANY_B))
+            self.lastAmax = 4
+
+        return result
 
     def save_trained_model(self):
         """
-        Save the trained neural network under a fixed name specific for this trader.
+        Save the trained neural net work under a fixed name specific for this trader.
         """
         save_keras_sequential(self.model, self.RELATIVE_DATA_DIRECTORY, self.network_filename)
 
 
 # This method retrains the trader from scratch using training data from PERIOD_1 and test data from PERIOD_2
-EPISODES = 50
+EPISODES = 6
 if __name__ == "__main__":
     # Read the training data
     training_data = read_stock_market_data([CompanyEnum.COMPANY_A, CompanyEnum.COMPANY_B], [PERIOD_1])
@@ -127,9 +224,10 @@ if __name__ == "__main__":
     portfolio = Portfolio(10000.0, [], name)
 
     # Initialize trader: use perfect predictors, don't use an already trained model, but learn while trading
-    # trader = DqlTrader(PerfectPredictor(CompanyEnum.COMPANY_A), PerfectPredictor(CompanyEnum.COMPANY_B), False, True, MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR)
+    trader = TeamGreenDqlTrader(PerfectPredictor(CompanyEnum.COMPANY_A), PerfectPredictor(CompanyEnum.COMPANY_B), False,
+                                True, MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR)
     # trader = DqlTrader(StockANnPerfectBinaryPredictor(), StockBNnPerfectBinaryPredictor(), False, True, MODEL_FILENAME_DQLTRADER_PERFECT_NN_BINARY_PREDICTOR)
-    trader = TeamGreenDqlTrader(StockANnBinaryPredictor(), StockBNnBinaryPredictor(), False, True, MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR)
+    # trader = TeamGreenDqlTrader(StockANnBinaryPredictor(), StockBNnBinaryPredictor(), False, True, MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR)
 
     # Start evaluation and train correspondingly; don't display the results in a plot but display final portfolio value
     evaluator = PortfolioEvaluator([trader], False)
@@ -144,9 +242,11 @@ if __name__ == "__main__":
         trader.save_trained_model()
 
         # Evaluation over training and visualization
-        # trader_test = TeamGreenDqlTrader(PerfectPredictor(CompanyEnum.COMPANY_A), PerfectPredictor(CompanyEnum.COMPANY_B), True, False, MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR)
+        trader_test = TeamGreenDqlTrader(PerfectPredictor(CompanyEnum.COMPANY_A),
+                                         PerfectPredictor(CompanyEnum.COMPANY_B), True, False,
+                                         MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR)
         # trader_test = TeamGreenDqlTrader(StockANnPerfectBinaryPredictor(), StockBNnPerfectBinaryPredictor(), True, False, MODEL_FILENAME_DQLTRADER_PERFECT_NN_BINARY_PREDICTOR)
-        trader_test = TeamGreenDqlTrader(StockANnBinaryPredictor(), StockBNnBinaryPredictor(), True, False, MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR)
+        # trader_test = TeamGreenDqlTrader(StockANnBinaryPredictor(), StockBNnBinaryPredictor(), True, False, MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR)
         evaluator_test = PortfolioEvaluator([trader_test], False)
         all_portfolios_over_time = evaluator_test.inspect_over_time(test_data, [portfolio], date_offset=start_test_day)
         portfolio_over_time = all_portfolios_over_time[name]

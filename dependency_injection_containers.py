@@ -162,7 +162,7 @@ class Traders(containers.DeclarativeContainer):
         TeamGreenDqlTrader,
         stock_a_predictor=Predictors.PerfectPredictor_stock_a,
         stock_b_predictor=Predictors.PerfectPredictor_stock_b,
-        network_filename=team_green_dql_trader.MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR
+        network_filename=team_green_dql_trader.MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR
         )
         
     """Team Black Traders"""
