@@ -33,6 +33,7 @@ MODEL_FILENAME_DQLTRADER_PERFECT_NN_BINARY_PREDICTOR = TEAM_NAME + '_dql_trader_
 MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR = TEAM_NAME + '_dql_trader_nn_binary'
 
 GAMMA = 0.0
+MEMOMRY_SIZE = 10
 
 class TeamGreenDqlTrader(ITrader):
     """
@@ -68,7 +69,7 @@ class TeamGreenDqlTrader(ITrader):
         self.epsilon = 1.0
         self.epsilon_decay = 0.999
         self.epsilon_min = 0.01
-        self.batch_size = 64
+        self.batch_size = MEMOMRY_SIZE + 1
         self.min_size_of_memory_before_training = 1000  # should be way bigger than batch_size, but smaller than memory
         self.memory = deque(maxlen=2000)
 
@@ -96,6 +97,8 @@ class TeamGreenDqlTrader(ITrader):
 
         self.lastInput = None
         self.lastOutput = None
+
+        self.memory = []
 
 
     def doTrade(self, portfolio: Portfolio, current_portfolio_value: float,
@@ -138,9 +141,20 @@ class TeamGreenDqlTrader(ITrader):
             shouldBeQ = lastReward + GAMMA * qmax
 
             self.lastOutput[self.lastAmax] = shouldBeQ
-            if shouldBeQ:
-                self.lastOutput[1 - self.lastAmax] = -1.0
-            self.model.fit(self.lastInput, numpy.asarray([self.lastOutput]))
+
+            xtrain = [self.lastInput[0]]
+            ytrain = [self.lastOutput]
+            for m in self.memory:
+                xtrain.append(m[0][0])
+                qs = self.model.predict(m[0])[0]
+                qs[m[1]] = m[2]
+                ytrain.append(qs)
+
+            self.model.fit(numpy.asarray(xtrain), numpy.asarray(ytrain))
+
+            self.memory.append([self.lastInput, self.lastAmax, lastReward])
+            if len(self.memory) > MEMOMRY_SIZE:
+                self.memory.pop(0)
 
         self.lastValue = currentValue
         self.lastInput = INPUT
@@ -178,7 +192,7 @@ class TeamGreenDqlTrader(ITrader):
 
 
 # This method retrains the trader from scratch using training data from PERIOD_1 and test data from PERIOD_2
-EPISODES = 30
+EPISODES = 3
 if __name__ == "__main__":
     # Read the training data
     training_data = read_stock_market_data([CompanyEnum.COMPANY_A, CompanyEnum.COMPANY_B], [PERIOD_1])
