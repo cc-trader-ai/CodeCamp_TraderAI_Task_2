@@ -211,7 +211,7 @@ class TeamGreenDqlTrader(ITrader):
 
 
 # This method retrains the trader from scratch using training data from PERIOD_1 and test data from PERIOD_2
-EPISODES = 6
+EPISODES = 7
 if __name__ == "__main__":
     # Read the training data
     training_data = read_stock_market_data([CompanyEnum.COMPANY_A, CompanyEnum.COMPANY_B], [PERIOD_1])
