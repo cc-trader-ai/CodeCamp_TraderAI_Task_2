@@ -151,7 +151,9 @@ class TeamBlackDqlTrader(ITrader):
 
             # print(np_reward_array)
 
-            self.model.fit(self.np_previous_status, np_reward_array, epochs=1, batch_size=1, verbose=0)
+
+            if self.train_while_trading:
+                self.model.fit(self.np_previous_status, np_reward_array, epochs=1, batch_size=1, verbose=0)
 
         # TODO: Create actions for current state and decrease epsilon for fewer random actions
 
