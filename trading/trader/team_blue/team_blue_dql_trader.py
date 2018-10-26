@@ -6,6 +6,7 @@ Created on 19.11.2017
 from collections import deque
 import datetime as dt
 
+import math
 from definitions import PERIOD_1, PERIOD_2
 from evaluating.portfolio_evaluator import PortfolioEvaluator
 from model.Portfolio import Portfolio
@@ -20,6 +21,7 @@ from model.Order import CompanyEnum
 from utils import save_keras_sequential, load_keras_sequential, read_stock_market_data
 from logger import logger
 from predicting.predictor.reference.nn_binary_predictor import StockANnBinaryPredictor, StockBNnBinaryPredictor
+import numpy as np
 
 TEAM_NAME = "team_blue"
 
@@ -53,9 +55,9 @@ class TeamBlueDqlTrader(ITrader):
         self.network_filename = network_filename
 
         # Parameters for neural network
-        self.state_size = 2
-        self.action_size = 10
-        self.hidden_size = 50
+        self.state_size = 5
+        self.action_size = 4
+        self.hidden_size = 5
 
         # Parameters for deep Q-learning
         self.learning_rate = 0.001
@@ -78,10 +80,21 @@ class TeamBlueDqlTrader(ITrader):
             self.model = Sequential()
             self.model.add(Dense(self.hidden_size * 2, input_dim=self.state_size, activation='relu'))
             self.model.add(Dense(self.hidden_size, activation='relu'))
-            self.model.add(Dense(self.action_size, activation='linear'))
+            self.model.add(Dense(self.action_size, activation='tanh'))
             logger.info(f"DQL Trader: Created new untrained model")
         assert self.model is not None
         self.model.compile(loss='mse', optimizer=Adam(lr=self.learning_rate))
+
+        self.portfolio_value_prev = 10000.0;
+        self.pct_a_prev = 0;
+        self.pct_b_prev = 0;
+        self.pct_cash_prev = 1;
+        self.diff_a_prev = 0;
+        self.diff_b_prev = 0;
+
+        self.loop_value = 0
+        self.idx_prev = 0;
+        self.y_prev = np.array([[0, 0, 0, 0]])
 
     def doTrade(self, portfolio: Portfolio, current_portfolio_value: float,
                 stock_market_data: StockMarketData) -> OrderList:
@@ -97,14 +110,76 @@ class TeamBlueDqlTrader(ITrader):
           A OrderList instance, may be empty never None
         """
         # TODO: Build and store current state object
+        s_a_current = stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_A)
+        s_b_current = stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_B)
+
+        pct_a = round((s_a_current * portfolio.get_amount(CompanyEnum.COMPANY_A))/portfolio.total_value(stock_market_data.get_most_recent_trade_day(), stock_market_data), 2)
+        pct_b = round((s_b_current * portfolio.get_amount(CompanyEnum.COMPANY_B))/portfolio.total_value(stock_market_data.get_most_recent_trade_day(), stock_market_data), 2)
+        pct_cash = 1 - pct_a - pct_b;
+
+
+        s_a_next = self.stock_a_predictor.doPredict(stock_market_data[CompanyEnum.COMPANY_A]);
+        s_b_next = self.stock_b_predictor.doPredict(stock_market_data[CompanyEnum.COMPANY_B]);
+
+        pct_a_diff = round((s_a_next - s_a_current) / s_a_current, 2);
+        pct_b_diff = round((s_b_next - s_b_current) / s_b_current, 2);
+
+        portfolio_value = portfolio.total_value(stock_market_data.get_most_recent_trade_day(), stock_market_data);
+        portfolio_diff = round((self.portfolio_value_prev - portfolio_value) / self.portfolio_value_prev, 2);
+
+
+
+
+        #r = -1;
+        #if (portfolio_diff < 0):
+        #    r = 1;
+        #elif (portfolio_diff == 0):
+        #    r = 0;
+
+        if (portfolio_diff < 0):
+            self.y_prev[0][self.idx_prev] = 1;
+        elif (portfolio_diff >= 0):
+            self.y_prev[0][self.idx_prev] = -1;
+
+
+
 
         # TODO: Store experience and train the neural network only if doTrade was called before at least once
+        if (self.loop_value > 0):
+            self.model.fit(np.array([[self.pct_a_prev, self.pct_b_prev, self.pct_cash_prev, self.diff_a_prev, self.diff_b_prev]]), self.y_prev, epochs=1, batch_size=1)
 
         # TODO: Create actions for current state and decrease epsilon for fewer random actions
 
-        # TODO: Save created state, actions and portfolio value for the next call of doTrade
+        res = self.model.predict(np.array([[pct_a, pct_b, pct_cash, pct_a_diff, pct_b_diff]])) # [0, 0, 1, 0]
+        idx = np.argmax(res);
 
-        return OrderList()
+        ret = OrderList()
+
+
+        if (idx == 0):
+            ret.buy(CompanyEnum.COMPANY_A, math.floor(portfolio.cash / stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_A)))
+        elif (idx == 1):
+            ret.buy(CompanyEnum.COMPANY_B, math.floor(portfolio.cash / stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_B)))
+        elif (idx == 2):
+            ret.sell(CompanyEnum.COMPANY_A, portfolio.get_amount(CompanyEnum.COMPANY_A))     
+        else:
+            ret.sell(CompanyEnum.COMPANY_B, portfolio.get_amount(CompanyEnum.COMPANY_B))
+
+
+
+        # TODO: Save created state, actions and portfolio value for the next call of doTrade
+        self.portfolio_value_prev = portfolio_value;
+        self.pct_a_prev = pct_a;
+        self.pct_b_prev = pct_b;
+        self.pct_cash_prev = pct_cash;
+        self.diff_a_prev = pct_a_diff;
+        self.diff_b_prev = pct_a_diff;
+        self.idx_prev = idx;
+        self.y_prev = res;
+
+        self.loop_value = self.loop_value + 1;
+
+        return ret
 
     def save_trained_model(self):
         """
