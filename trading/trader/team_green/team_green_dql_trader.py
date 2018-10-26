@@ -3,8 +3,12 @@ Created on 19.11.2017
 
 @author: rmueller
 """
+import math
 from collections import deque
 import datetime as dt
+import random
+
+import numpy
 
 from definitions import PERIOD_1, PERIOD_2
 from evaluating.portfolio_evaluator import PortfolioEvaluator
@@ -27,6 +31,7 @@ MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR = TEAM_NAME + '_dql_trader_perfect'
 MODEL_FILENAME_DQLTRADER_PERFECT_NN_BINARY_PREDICTOR = TEAM_NAME + '_dql_trader_perfect_nn_binary'
 MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR = TEAM_NAME + '_dql_trader_nn_binary'
 
+GAMMA = 0.0
 
 class TeamGreenDqlTrader(ITrader):
     """
@@ -54,7 +59,7 @@ class TeamGreenDqlTrader(ITrader):
 
         # Parameters for neural network
         self.state_size = 2
-        self.action_size = 10
+        self.action_size = 2
         self.hidden_size = 50
 
         # Parameters for deep Q-learning
@@ -83,6 +88,15 @@ class TeamGreenDqlTrader(ITrader):
         assert self.model is not None
         self.model.compile(loss='mse', optimizer=Adam(lr=self.learning_rate))
 
+
+        self.lastValue = None
+        self.lastQmax = None
+        self.lastAmax = None
+
+        self.lastInput = None
+        self.lastOutput = None
+
+
     def doTrade(self, portfolio: Portfolio, current_portfolio_value: float,
                 stock_market_data: StockMarketData) -> OrderList:
         """
@@ -96,7 +110,8 @@ class TeamGreenDqlTrader(ITrader):
         Returns:
           A OrderList instance, may be empty never None
         """
-        # TODO: Build and store current state object
+
+
 
         # TODO: Store experience and train the neural network only if doTrade was called before at least once
 
@@ -104,17 +119,61 @@ class TeamGreenDqlTrader(ITrader):
 
         # TODO: Save created state, actions and portfolio value for the next call of doTrade
 
-        return OrderList()
+        INPUT = numpy.asarray([[
+            self.stock_a_predictor.doPredict(stock_market_data[CompanyEnum.COMPANY_A]) - stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_A),
+            self.stock_b_predictor.doPredict(stock_market_data[CompanyEnum.COMPANY_B]) - stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_B),
+        ]])
+        qualities = self.model.predict(INPUT)[0]
+
+        qmax = max(qualities[0], qualities[1])
+
+        currentValue = portfolio.total_value(stock_market_data.get_most_recent_trade_day(), stock_market_data)
+
+        if self.lastValue:
+            lastReward = currentValue / self.lastValue - 1
+            shouldBeQ = lastReward + GAMMA * qmax
+
+            self.lastOutput[self.lastAmax] = shouldBeQ
+            self.lastOutput[1 - self.lastAmax] = 0.0
+            self.model.fit(self.lastInput, numpy.asarray([self.lastOutput]))
+
+        self.lastValue = currentValue
+        self.lastInput = INPUT
+        self.lastOutput = qualities
+
+        result = OrderList()
+
+        buyB = None
+
+        if random.random() < self.epsilon:
+            buyB = random.random() > 0.5
+        else:
+            buyB = qualities[0] > qualities[1]
+
+        self.epsilon *= max(self.epsilon_decay, self.epsilon_min)
+
+        if buyB:
+            result.sell(CompanyEnum.COMPANY_A, portfolio.get_amount(CompanyEnum.COMPANY_A))
+            count = math.floor(portfolio.cash / stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_B))
+            result.buy(CompanyEnum.COMPANY_B, count)
+            self.lastAmax = 0
+        else:
+            result.sell(CompanyEnum.COMPANY_B, portfolio.get_amount(CompanyEnum.COMPANY_B))
+            count = math.floor(portfolio.cash / stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_A))
+            result.buy(CompanyEnum.COMPANY_A, count)
+            self.lastAmax = 1
+
+        return result
 
     def save_trained_model(self):
         """
-        Save the trained neural network under a fixed name specific for this trader.
+        Save the trained neural net work under a fixed name specific for this trader.
         """
         save_keras_sequential(self.model, self.RELATIVE_DATA_DIRECTORY, self.network_filename)
 
 
 # This method retrains the trader from scratch using training data from PERIOD_1 and test data from PERIOD_2
-EPISODES = 50
+EPISODES = 30
 if __name__ == "__main__":
     # Read the training data
     training_data = read_stock_market_data([CompanyEnum.COMPANY_A, CompanyEnum.COMPANY_B], [PERIOD_1])
