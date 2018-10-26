@@ -21,6 +21,7 @@ from keras.models import Sequential
 from keras.layers import Dense
 from keras.optimizers import Adam
 from model.Order import CompanyEnum
+from predicting.predictor.reference.perfect_predictor import PerfectPredictor
 from utils import save_keras_sequential, load_keras_sequential, read_stock_market_data
 from logger import logger
 from predicting.predictor.reference.nn_binary_predictor import StockANnBinaryPredictor, StockBNnBinaryPredictor
@@ -119,10 +120,13 @@ class TeamGreenDqlTrader(ITrader):
 
         # TODO: Save created state, actions and portfolio value for the next call of doTrade
 
+        deltaA = self.stock_a_predictor.doPredict(stock_market_data[CompanyEnum.COMPANY_A]) - stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_A)
+        deltaB = self.stock_b_predictor.doPredict(stock_market_data[CompanyEnum.COMPANY_B]) - stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_B)
+
         INPUT = numpy.asarray([[
-            self.stock_a_predictor.doPredict(stock_market_data[CompanyEnum.COMPANY_A]) - stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_A),
-            self.stock_b_predictor.doPredict(stock_market_data[CompanyEnum.COMPANY_B]) - stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_B),
-        ]])
+         1.0 if deltaA > 0.0 else 0.0,
+         1.0 if deltaB > 0.0 else 0.0,
+         ]])
         qualities = self.model.predict(INPUT)[0]
 
         qmax = max(qualities[0], qualities[1])
@@ -130,11 +134,12 @@ class TeamGreenDqlTrader(ITrader):
         currentValue = portfolio.total_value(stock_market_data.get_most_recent_trade_day(), stock_market_data)
 
         if self.lastValue:
-            lastReward = currentValue / self.lastValue - 1
+            lastReward = min(1, max(-1, (currentValue / self.lastValue - 1) / 0.04))
             shouldBeQ = lastReward + GAMMA * qmax
 
             self.lastOutput[self.lastAmax] = shouldBeQ
-            self.lastOutput[1 - self.lastAmax] = 0.0
+            if shouldBeQ:
+                self.lastOutput[1 - self.lastAmax] = -1.0
             self.model.fit(self.lastInput, numpy.asarray([self.lastOutput]))
 
         self.lastValue = currentValue
@@ -186,9 +191,9 @@ if __name__ == "__main__":
     portfolio = Portfolio(10000.0, [], name)
 
     # Initialize trader: use perfect predictors, don't use an already trained model, but learn while trading
-    # trader = DqlTrader(PerfectPredictor(CompanyEnum.COMPANY_A), PerfectPredictor(CompanyEnum.COMPANY_B), False, True, MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR)
+    trader = TeamGreenDqlTrader(PerfectPredictor(CompanyEnum.COMPANY_A), PerfectPredictor(CompanyEnum.COMPANY_B), False, True, MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR)
     # trader = DqlTrader(StockANnPerfectBinaryPredictor(), StockBNnPerfectBinaryPredictor(), False, True, MODEL_FILENAME_DQLTRADER_PERFECT_NN_BINARY_PREDICTOR)
-    trader = TeamGreenDqlTrader(StockANnBinaryPredictor(), StockBNnBinaryPredictor(), False, True, MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR)
+    #trader = TeamGreenDqlTrader(StockANnBinaryPredictor(), StockBNnBinaryPredictor(), False, True, MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR)
 
     # Start evaluation and train correspondingly; don't display the results in a plot but display final portfolio value
     evaluator = PortfolioEvaluator([trader], False)
@@ -203,9 +208,9 @@ if __name__ == "__main__":
         trader.save_trained_model()
 
         # Evaluation over training and visualization
-        # trader_test = TeamGreenDqlTrader(PerfectPredictor(CompanyEnum.COMPANY_A), PerfectPredictor(CompanyEnum.COMPANY_B), True, False, MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR)
+        trader_test = TeamGreenDqlTrader(PerfectPredictor(CompanyEnum.COMPANY_A), PerfectPredictor(CompanyEnum.COMPANY_B), True, False, MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR)
         # trader_test = TeamGreenDqlTrader(StockANnPerfectBinaryPredictor(), StockBNnPerfectBinaryPredictor(), True, False, MODEL_FILENAME_DQLTRADER_PERFECT_NN_BINARY_PREDICTOR)
-        trader_test = TeamGreenDqlTrader(StockANnBinaryPredictor(), StockBNnBinaryPredictor(), True, False, MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR)
+        #trader_test = TeamGreenDqlTrader(StockANnBinaryPredictor(), StockBNnBinaryPredictor(), True, False, MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR)
         evaluator_test = PortfolioEvaluator([trader_test], False)
         all_portfolios_over_time = evaluator_test.inspect_over_time(test_data, [portfolio], date_offset=start_test_day)
         portfolio_over_time = all_portfolios_over_time[name]
