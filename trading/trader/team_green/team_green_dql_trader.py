@@ -32,7 +32,7 @@ MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR = TEAM_NAME + '_dql_trader_perfect'
 MODEL_FILENAME_DQLTRADER_PERFECT_NN_BINARY_PREDICTOR = TEAM_NAME + '_dql_trader_perfect_nn_binary'
 MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR = TEAM_NAME + '_dql_trader_nn_binary'
 
-GAMMA = 0.0
+GAMMA = 0.1
 MEMOMRY_SIZE = 10
 
 class TeamGreenDqlTrader(ITrader):
@@ -61,7 +61,7 @@ class TeamGreenDqlTrader(ITrader):
 
         # Parameters for neural network
         self.state_size = 2
-        self.action_size = 2
+        self.action_size = 3
         self.hidden_size = 50
 
         # Parameters for deep Q-learning
@@ -132,7 +132,7 @@ class TeamGreenDqlTrader(ITrader):
          ]])
         qualities = self.model.predict(INPUT)[0]
 
-        qmax = max(qualities[0], qualities[1])
+        qmax = max(qualities[0], qualities[1], qualities[2])
 
         currentValue = portfolio.total_value(stock_market_data.get_most_recent_trade_day(), stock_market_data)
 
@@ -147,7 +147,7 @@ class TeamGreenDqlTrader(ITrader):
             for m in self.memory:
                 xtrain.append(m[0][0])
                 qs = self.model.predict(m[0])[0]
-                qs[m[1]] = m[2]
+                qs[m[1]] = m[2] + GAMMA * qs[m[1]]
                 ytrain.append(qs)
 
             self.model.fit(numpy.asarray(xtrain), numpy.asarray(ytrain))
@@ -162,25 +162,32 @@ class TeamGreenDqlTrader(ITrader):
 
         result = OrderList()
 
-        buyB = None
+        actions = ["buyA", "buyB", "sellAll"]
 
+        nextAction = None
         if random.random() < self.epsilon:
-            buyB = random.random() > 0.5
+            nextAction = actions[random.randint(0,2)]
         else:
-            buyB = qualities[0] > qualities[1]
+            i = 0 if qualities[0] > qualities[1] else 1
+            i = 2 if qualities[2] > qualities[i] else i
+            nextAction = actions[i]
 
-        self.epsilon *= max(self.epsilon_decay, self.epsilon_min)
+        self.epsilon = max(self.epsilon_decay * self.epsilon, self.epsilon_min)
 
-        if buyB:
+        if nextAction == "buyB":
             result.sell(CompanyEnum.COMPANY_A, portfolio.get_amount(CompanyEnum.COMPANY_A))
             count = math.floor(portfolio.cash / stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_B))
             result.buy(CompanyEnum.COMPANY_B, count)
             self.lastAmax = 0
-        else:
+        elif nextAction == "buyA":
             result.sell(CompanyEnum.COMPANY_B, portfolio.get_amount(CompanyEnum.COMPANY_B))
             count = math.floor(portfolio.cash / stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_A))
             result.buy(CompanyEnum.COMPANY_A, count)
             self.lastAmax = 1
+        elif nextAction == "sellAll":
+            result.sell(CompanyEnum.COMPANY_A, portfolio.get_amount(CompanyEnum.COMPANY_A))
+            result.sell(CompanyEnum.COMPANY_B, portfolio.get_amount(CompanyEnum.COMPANY_B))
+            self.lastAmax = 2
 
         return result
 
