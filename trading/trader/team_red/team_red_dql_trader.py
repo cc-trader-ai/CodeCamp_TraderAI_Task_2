@@ -155,7 +155,7 @@ class TeamRedDqlTrader(ITrader):
 
     def calculate_reward(self, state, last_state):
         portfolio_value_delta = calculate_delta(state.portfolio_value, last_state.portfolio_value)
-        return portfolio_value_delta - 0.5
+        return portfolio_value_delta
 
     def decide_action(self, state, last_state):
         best_action = None
