@@ -13,6 +13,7 @@ from definitions import PERIOD_1, PERIOD_2
 from evaluating.portfolio_evaluator import PortfolioEvaluator
 from model.Portfolio import Portfolio
 from model.StockMarketData import StockMarketData
+from model.Order import SharesOfCompany
 from model.IPredictor import IPredictor
 from model.ITrader import ITrader
 from model.Order import OrderList
@@ -22,6 +23,7 @@ from keras.optimizers import Adam
 from model.Order import CompanyEnum
 from utils import save_keras_sequential, load_keras_sequential, read_stock_market_data
 from logger import logger
+from predicting.predictor.reference.perfect_predictor import PerfectPredictor
 from predicting.predictor.reference.nn_binary_predictor import StockANnBinaryPredictor, StockBNnBinaryPredictor
 from predicting.predictor.reference.nn_perfect_binary_predictor import StockANnPerfectBinaryPredictor, StockBNnPerfectBinaryPredictor
 
@@ -108,7 +110,7 @@ class TeamRedDqlTrader(ITrader):
         current_price_b = stock_market_data.get_most_recent_price(CompanyEnum.COMPANY_B)
         
         predicted_price_a = self.stock_a_predictor.doPredict(stock_market_data[CompanyEnum.COMPANY_A])
-        predicted_price_b = self.stock_b_predictor.doPredict(stock_market_data[CompanyEnum.COMPANY_A])
+        predicted_price_b = self.stock_b_predictor.doPredict(stock_market_data[CompanyEnum.COMPANY_B])
         
         portfolio_value = portfolio.total_value(
             stock_market_data.get_most_recent_trade_day(), 
@@ -126,7 +128,7 @@ class TeamRedDqlTrader(ITrader):
 
         # DONE: Create actions for current state and decrease epsilon for fewer random actions
         action = self.decide_action(state)
-        orders = self.create_orders(action)
+        orders = self.create_orders(action, portfolio, stock_market_data)
 
         # DONE: Save created state, actions and portfolio value for the next call of doTrade
         self.last_state = state
@@ -141,30 +143,69 @@ class TeamRedDqlTrader(ITrader):
             last_state.get_delta_price_a(), 
             last_state.get_delta_price_b()
         ]])
-        expected_output = np.array([[
-                reward + self.gamma * prediction_for_current_state[TradingAction.SELL_A_AND_B.value],
-                reward + self.gamma * prediction_for_current_state[TradingAction.BUY_A_AND_SELL_B.value],
-                reward + self.gamma * prediction_for_current_state[TradingAction.BUY_B_AND_SELL_A.value],
-                reward + self.gamma * prediction_for_current_state[TradingAction.BUY_A_AND_B.value]
-        ]])
+
+        expected_predictions = [
+            last_state.predicted_actions[TradingAction.SELL_A_AND_B.value],
+            last_state.predicted_actions[TradingAction.BUY_A_AND_SELL_B.value],
+            last_state.predicted_actions[TradingAction.BUY_B_AND_SELL_A.value],
+            last_state.predicted_actions[TradingAction.BUY_A_AND_B.value]
+        ]
+
+        last_action_index = last_state.best_action.value
+        expected_predictions[last_action_index] = reward + self.gamma * prediction_for_current_state[last_action_index]
+        expected_output = np.array([expected_predictions])
+
         self.model.fit(model_input, expected_output, epochs=self.train_epochs, batch_size=self.batch_size)
 
     def calculate_reward(self, state, last_state):
         return calculate_delta(state.portfolio_value, last_state.portfolio_value)
 
     def decide_action(self, state):
-        actions = self.predict_actions(state)
-        best_action = actions.index(max(actions))
-        return TradingAction(best_action)
+        predicted_actions = self.predict_actions(state)
+        best_action_index = predicted_actions.index(max(predicted_actions))
+        best_action = TradingAction(best_action_index)
+        state.predicted_actions = predicted_actions
+        state.best_action = best_action
+        return best_action
 
-    def create_orders(self, action):
-        return OrderList()
+    def create_orders(self, action, portfolio, stock_market_data):
+        orders = OrderList()
+        if action == TradingAction.SELL_A_AND_B:
+            self.sell_shares(CompanyEnum.COMPANY_A, orders, portfolio, stock_market_data)
+            self.sell_shares(CompanyEnum.COMPANY_B, orders, portfolio, stock_market_data)
+        elif action == TradingAction.BUY_A_AND_SELL_B:
+            self.sell_shares(CompanyEnum.COMPANY_B, orders, portfolio, stock_market_data)
+            self.buy_shares(CompanyEnum.COMPANY_A, orders, portfolio.cash, stock_market_data)
+        elif action == TradingAction.BUY_B_AND_SELL_A:
+            self.sell_shares(CompanyEnum.COMPANY_A, orders, portfolio, stock_market_data)
+            self.buy_shares(CompanyEnum.COMPANY_B, orders, portfolio.cash, stock_market_data)
+        elif action == TradingAction.BUY_A_AND_B:
+            self.buy_shares(CompanyEnum.COMPANY_A, orders, portfolio.cash / 2, stock_market_data)
+            self.buy_shares(CompanyEnum.COMPANY_B, orders, portfolio.cash / 2, stock_market_data)
+        for order in orders:
+            logger.info("Trading: {0} {1} from {2}".format(order.action, order.shares.amount, order.shares.company_enum))
+        return orders
+
+    def sell_shares(self, company, orders, portfolio, stock_market_data):
+        company_data = stock_market_data[company]
+        price = company_data.get_last()[-1]
+        shares = find_shares_of_company(company, portfolio.shares)
+        if shares:
+            orders.sell(company, shares.amount)
+            portfolio.cash += shares.amount * price
+
+    def buy_shares(self, company, orders, cash, stock_market_data):
+        company_data = stock_market_data[company]
+        price = company_data.get_last()[-1]
+        amount_to_buy = int(cash // price)
+        if amount_to_buy > 0:
+            orders.buy(company, amount_to_buy)
 
     def predict_actions(self, state):
-        input = np.array([[
+        model_input = np.array([[
             state.get_delta_price_a(), state.get_delta_price_b()
         ]])
-        return self.model.predict(input)[0].tolist()
+        return self.model.predict(model_input)[0].tolist()
 
     def save_trained_model(self):
         """
@@ -179,6 +220,8 @@ class State():
         self.current_price_b = current_price_b
         self.predicted_price_a = predicted_price_a
         self.predicted_price_b = predicted_price_b
+        self.predicted_actions = None
+        self.best_action = None
 
     def get_delta_price_a(self):
         return calculate_delta(self.predicted_price_a, self.current_price_a)
@@ -195,8 +238,15 @@ class TradingAction(Enum):
 def calculate_delta(a, b):
     return (a / b) - 1
 
+def find_shares_of_company(company_enum: CompanyEnum, shares: list) -> SharesOfCompany:
+    for shares_of_company in shares:
+        if isinstance(shares_of_company, SharesOfCompany) and shares_of_company.company_enum == company_enum:
+            return shares_of_company
+
+    return None
+
 # This method retrains the trader from scratch using training data from PERIOD_1 and test data from PERIOD_2
-EPISODES = 50
+EPISODES = 10
 if __name__ == "__main__":
     # Read the training data
     training_data = read_stock_market_data([CompanyEnum.COMPANY_A, CompanyEnum.COMPANY_B], [PERIOD_1])
@@ -209,8 +259,8 @@ if __name__ == "__main__":
     portfolio = Portfolio(10000.0, [], name)
 
     # Initialize trader: use perfect predictors, don't use an already trained model, but learn while trading
-    # trader = DqlTrader(PerfectPredictor(CompanyEnum.COMPANY_A), PerfectPredictor(CompanyEnum.COMPANY_B), False, True, MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR)
-    trader = TeamRedDqlTrader(StockANnPerfectBinaryPredictor(), StockBNnPerfectBinaryPredictor(), False, True, MODEL_FILENAME_DQLTRADER_PERFECT_NN_BINARY_PREDICTOR)
+    trader = TeamRedDqlTrader(PerfectPredictor(CompanyEnum.COMPANY_A), PerfectPredictor(CompanyEnum.COMPANY_B), False, True, MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR)
+    # trader = TeamRedDqlTrader(StockANnPerfectBinaryPredictor(), StockBNnPerfectBinaryPredictor(), False, True, MODEL_FILENAME_DQLTRADER_PERFECT_NN_BINARY_PREDICTOR)
     # trader = TeamRedDqlTrader(StockANnBinaryPredictor(), StockBNnBinaryPredictor(), False, True, MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR)
 
     # Start evaluation and train correspondingly; don't display the results in a plot but display final portfolio value
@@ -226,8 +276,8 @@ if __name__ == "__main__":
         trader.save_trained_model()
 
         # Evaluation over training and visualization
-        # trader_test = TeamRedDqlTrader(PerfectPredictor(CompanyEnum.COMPANY_A), PerfectPredictor(CompanyEnum.COMPANY_B), True, False, MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR)
-        trader_test = TeamRedDqlTrader(StockANnPerfectBinaryPredictor(), StockBNnPerfectBinaryPredictor(), True, False, MODEL_FILENAME_DQLTRADER_PERFECT_NN_BINARY_PREDICTOR)
+        trader_test = TeamRedDqlTrader(PerfectPredictor(CompanyEnum.COMPANY_A), PerfectPredictor(CompanyEnum.COMPANY_B), True, False, MODEL_FILENAME_DQLTRADER_PERFECT_PREDICTOR)
+        # trader_test = TeamRedDqlTrader(StockANnPerfectBinaryPredictor(), StockBNnPerfectBinaryPredictor(), True, False, MODEL_FILENAME_DQLTRADER_PERFECT_NN_BINARY_PREDICTOR)
         # trader_test = TeamRedDqlTrader(StockANnBinaryPredictor(), StockBNnBinaryPredictor(), True, False, MODEL_FILENAME_DQLTRADER_NN_BINARY_PREDICTOR)
         evaluator_test = PortfolioEvaluator([trader_test], False)
         all_portfolios_over_time = evaluator_test.inspect_over_time(test_data, [portfolio], date_offset=start_test_day)
