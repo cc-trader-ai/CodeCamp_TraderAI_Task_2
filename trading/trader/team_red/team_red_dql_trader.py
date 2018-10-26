@@ -199,13 +199,14 @@ class TeamRedDqlTrader(ITrader):
 
     def predict_actions(self, state):
         model_input = np.array([[
-            state.get_delta_price_a(), state.get_delta_price_b()
+            state.get_delta_price_a(),
+            state.get_delta_price_b()
         ]])
         return self.model.predict(model_input)[0].tolist()
 
     def reduce_epsilon(self):
         if self.epsilon > self.epsilon_min:
-            self.epsilon = min(self.epsilon_min * self.epsilon_decay, self.epsilon_min)
+            self.epsilon = max(self.epsilon_min * self.epsilon_decay, self.epsilon_min)
 
     def save_trained_model(self):
         """
